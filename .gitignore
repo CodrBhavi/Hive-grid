@@ -1,9 +1,5 @@
-.venv/
-.vendor/
-.tmp/
-__pycache__/
-*.py[cod]
-.pytest_cache/
-data/
-artifacts/*
-!artifacts/hive_policy.pt
+node_modules/
+dist/
+*.tsbuildinfo
+.vite/
+*.log
