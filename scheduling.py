@@ -51,7 +51,9 @@ def schedule_home(home: HomeProfile, step: int, temp: float, solar_kw: float, pr
     return Schedule(home.base_load_kw, ac, ev, geyser, other, charge, discharge, solar_kw, comfort)
 
 def schedule_horizon(home: HomeProfile, start_step: int, world: World, ev_remaining_kwh: float,
-                     battery_soc_kwh: float, room_temp_c: float, horizon: int = 48) -> list[Schedule]:
+                     battery_soc_kwh: float, room_temp_c: float, horizon: int = 48,
+                     current_price: float | None = None, current_stress: bool | None = None,
+                     price_multiplier: float = 1.0) -> list[Schedule]:
     """Roll the household teacher through a deterministic 48-step look-ahead."""
     schedules=[]; ev_left=ev_remaining_kwh; soc=battery_soc_kwh; room=room_temp_c
     for offset in range(max(1,min(48,horizon))):
@@ -59,7 +61,9 @@ def schedule_horizon(home: HomeProfile, start_step: int, world: World, ev_remain
         stress=world.is_stress(step)
         group=int(home.id[1:])%3; hour=step/4
         pre_cool=bool(world.heatwave and world.heat_start-12<=step<world.heat_start and 15+group<=hour<16+group and solar>home.base_load_kw+home.ac_count*home.ac_kw)
-        action=schedule_home(home,step,temp,solar,world.price(step),stress,ev_left,room,soc,pre_cool)
+        step_price=current_price if offset==0 and current_price is not None else world.price(step)
+        step_stress=current_stress if offset==0 and current_stress is not None else stress
+        action=schedule_home(home,step,temp,solar,step_price*price_multiplier,step_stress,ev_left,room,soc,pre_cool)
         schedules.append(action); ev_left=max(0,ev_left-action.ev_kw*.25)
         soc=min(home.battery_kwh,max(0,soc+action.battery_charge_kw*.25*home.battery_efficiency-action.battery_discharge_kw*.25/home.battery_efficiency))
         room=max(16,min(50,room+.015*(temp-room)-.7*action.ac_kw))

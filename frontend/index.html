@@ -96,7 +96,7 @@
     const [state,metrics,series,homes,grid]=await Promise.all([
       api('/simulation/state'),api('/metrics'),api('/timeseries'),api('/homes'),api('/grid')
     ]);
-    $('dot').classList.add('live'); const policyLabel=state.policy==='learned'?(state.learned_model_loaded?'Learned model':'Teacher fallback'):'Teacher baseline'; $('status').textContent=`${grid.stress?'Heatwave stress active':grid.heatwave_event?'Heatwave event scheduled':`Running · ${state.current_step}/96 intervals`} · ${policyLabel}`;
+    $('dot').classList.add('live'); const policyLabel=state.policy==='learned'?(state.learned_model_loaded?`Learned ${state.learned_agents.join('/')}`:'Teacher fallback'):'Teacher baseline'; $('status').textContent=`${grid.stress?'Heatwave stress active':grid.heatwave_event?'Heatwave event scheduled':`Running · ${state.current_step}/96 intervals`} · ${policyLabel}`;
     $('clock').textContent=`${state.time} · grid ₹${Number(state.grid_price).toFixed(2)}/kWh`;
     $('load').textContent=`${Number(state.society_net_load_kw).toFixed(1)} kW`;
     $('cap').textContent=`${Number(state.cap_kw).toFixed(1)} kW`;
@@ -127,7 +127,7 @@
   $('step').onclick=()=>action(()=>api('/simulation/step',{method:'POST',body:JSON.stringify({n_steps:4})}));
   $('run').onclick=()=>action(()=>api('/simulation/run',{method:'POST',body:'{}'}));
   $('reset').onclick=()=>action(async()=>{await api('/simulation/reset',{method:'POST',body:'{}'});$('dot').classList.remove('live');$('status').textContent='Not started';$('clock').textContent='—';$('homes').innerHTML='<div class="empty">Start a simulation to see household schedules.</div>';['load','cap','reduction','solar','violations'].forEach(id=>$(id).textContent='—');drawChart([]);},false);
-  api('/health').then(()=>{$('status').textContent='Backend connected';}).catch(error=>showError(error.message));
+  api('/health').then(()=>{api('/simulation/state').then(refresh).catch(()=>{$('status').textContent='Backend connected';});}).catch(error=>showError(error.message));
 </script>
 </body>
 </html>

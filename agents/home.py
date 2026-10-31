@@ -10,5 +10,7 @@ class HomeAgent:
     def act(self, step: int, temp: float, solar: float, price: float, stress: bool) -> Schedule: return schedule_home(self.profile, step, temp, solar, price, stress)
     def plan(self, step: int, world: World, ev_remaining_kwh: float, battery_soc_kwh: float, room_temp_c: float, horizon: int = 48) -> list[Schedule]:
         """Return rolling-horizon schedules based only on this home's profile and public world signals."""
-        return schedule_horizon(self.profile,step,world,ev_remaining_kwh,battery_soc_kwh,room_temp_c,horizon)
+        return schedule_horizon(self.profile,step,world,ev_remaining_kwh,battery_soc_kwh,room_temp_c,horizon,
+            current_price=self.private_state.get('price'),current_stress=self.private_state.get('stress'),
+            price_multiplier=self.private_state.get('society_price_multiplier',1.0))
     def explain(self) -> str: return "Scheduled flexible loads around solar availability and the current peak signal."

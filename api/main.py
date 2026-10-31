@@ -39,12 +39,12 @@ class SimulationManager:
     def __init__(self): self.lock = RLock(); self.started = False; self.reset()
     def reset(self):
         with getattr(self, 'lock', RLock()):
-            self.started=False; self.step=0; self.homes=[]; self.world=None; self.logs=[]; self.loads=[]; self.trades=[]; self.home_stats={}; self.running_cost=0.0; self.solar_total=0.0; self.solar_used=0.0; self.overrides={}; self.baseline_loads=[]; self.violations=0; self.violation_counts={'energy_balance':0,'ev_deadline':0,'temperature_comfort':0}; self.negotiation_round=0; self.price_multiplier=1.0; self.fairness_weights={}; self.event_subscribers=set()
+            self.started=False; self.step=0; self.homes=[]; self.world=None; self.logs=[]; self.loads=[]; self.trades=[]; self.home_stats={}; self.running_cost=0.0; self.solar_total=0.0; self.solar_used=0.0; self.overrides={}; self.baseline_loads=[]; self.violations=0; self.violation_counts={'energy_balance':0,'ev_deadline':0,'temperature_comfort':0}; self.negotiation_round=0; self.price_multiplier=1.0; self.price_signal_vector=[1.0]*48; self.fairness_weights={}; self.event_subscribers=set()
     def start(self, req: StartRequest):
         if req.policy not in ('teacher', 'learned'): raise HTTPException(400, detail='policy must be teacher or learned')
         if req.scenario not in ('summer','heatwave'): raise HTTPException(400,detail='scenario must be summer or heatwave')
         with self.lock:
-            self.homes=generate_profiles(req.n_homes, req.seed); self.world=World(req.seed); self.step=0; self.logs=[]; self.loads=[]; self.trades=[]; self.home_stats={h.id:{'cost':0.,'baseline_cost':0.,'comfort':0.,'savings':0.,'soc':h.battery_kwh*.5,'baseline_soc':h.battery_kwh*.5,'ev_initial_soc':h.ev_battery_kwh*.5,'ev_remaining':max(h.ev_energy_need_kwh,h.ev_battery_kwh*max(0,h.ev_target_pct-.5)),'baseline_ev_remaining':max(h.ev_energy_need_kwh,h.ev_battery_kwh*max(0,h.ev_target_pct-.5)),'ev_energy_delivered':0.,'baseline_ev_delivered':0.,'ev_energy_used':0.,'room_temp':h.temperature_setpoint_c,'baseline_room_temp':h.temperature_setpoint_c} for h in self.homes}; self.started=True; self.policy=req.policy; self.seed=req.seed; self.learned_model=None; self.learned_fallback=req.policy=='learned'; self.overrides={}; self.baseline_loads=[]; self.solar_total=0.; self.solar_used=0.; self.running_cost=0.; self.trades=[]; self.loads=[]; self.logs=[]; self.violations=0; self.violation_counts={'energy_balance':0,'ev_deadline':0,'temperature_comfort':0}; self.negotiation_round=0; self.price_multiplier=1.0; self.fairness_weights={}
+            self.homes=generate_profiles(req.n_homes, req.seed); self.world=World(req.seed); self.step=0; self.logs=[]; self.loads=[]; self.trades=[]; self.home_stats={h.id:{'cost':0.,'baseline_cost':0.,'comfort':0.,'savings':0.,'soc':h.battery_kwh*.5,'baseline_soc':h.battery_kwh*.5,'ev_initial_soc':h.ev_battery_kwh*.5,'ev_remaining':max(h.ev_energy_need_kwh,h.ev_battery_kwh*max(0,h.ev_target_pct-.5)),'baseline_ev_remaining':max(h.ev_energy_need_kwh,h.ev_battery_kwh*max(0,h.ev_target_pct-.5)),'ev_energy_delivered':0.,'baseline_ev_delivered':0.,'ev_energy_used':0.,'room_temp':h.temperature_setpoint_c,'baseline_room_temp':h.temperature_setpoint_c} for h in self.homes}; self.started=True; self.policy=req.policy; self.seed=req.seed; self.learned_model=None; self.learned_fallback=req.policy=='learned'; self.overrides={}; self.baseline_loads=[]; self.solar_total=0.; self.solar_used=0.; self.running_cost=0.; self.trades=[]; self.loads=[]; self.logs=[]; self.violations=0; self.violation_counts={'energy_balance':0,'ev_deadline':0,'temperature_comfort':0}; self.negotiation_round=0; self.price_multiplier=1.0; self.price_signal_vector=[1.0]*48; self.fairness_weights={}
             if req.scenario == 'heatwave': self.world.heatwave=True
             if req.policy == 'learned':
                 try:
@@ -75,7 +75,9 @@ class SimulationManager:
     def state(self):
         with self.lock:
             net=self.loads[-1]['net_load_kw'] if self.loads else 0.; current=max(0,self.step-1)
-            return {'current_step':self.step,'time':f'{self.step//4:02d}:{(self.step%4)*15:02d}','society_net_load_kw':net,'cap_kw':self.world.cap_kw(len(self.homes),current) if self.world else 0.,'grid_price':self.world.price(current) if self.world else 0.,'stress':self.world.is_stress(current,net,len(self.homes)) if self.world else False,'running_cost':self.running_cost,'policy':getattr(self,'policy',None),'learned_model_loaded':self.learned_model is not None if getattr(self,'started',False) else False}
+            latest=self.loads[-1] if self.loads else {}
+            model_loaded=self.learned_model is not None if getattr(self,'started',False) else False
+            return {'current_step':self.step,'time':f'{self.step//4:02d}:{(self.step%4)*15:02d}','society_net_load_kw':net,'cap_kw':latest.get('cap_kw',self.world.cap_kw(len(self.homes),current) if self.world else 0.),'grid_price':latest.get('grid_price',self.world.price(current) if self.world else 0.),'stress':latest.get('stress',self.world.is_stress(current,net,len(self.homes)) if self.world else False),'running_cost':self.running_cost,'policy':getattr(self,'policy',None),'learned_model_loaded':model_loaded,'learned_agents':['HOME','SOCIETY','GRID'] if model_loaded else []}
     def advance(self, count):
         with self.lock:
             self.require(); count=min(count,96-self.step)
@@ -85,10 +87,11 @@ class SimulationManager:
                 self.one_step()
         with self.lock: return self.state()
     def one_step(self):
-        s=self.step; temp,cloud,hot=self.world.weather(s); price=self.world.price(s); previous_load=self.loads[-1]['net_load_kw'] if self.loads else 0.; stress=self.world.is_stress(s,previous_load,len(self.homes))
-        grid=GridAgent(self.world); grid.observe(s,n_homes=len(self.homes)); societal=SocietyAgent(); coord=HomeAgent
+        s=self.step; temp,cloud,hot=self.world.weather(s); previous_load=self.loads[-1]['net_load_kw'] if self.loads else 0.
+        society_price_factor=self.price_signal_vector[1] if s>0 and len(self.price_signal_vector)>1 else 1.0
+        grid=GridAgent(self.world); grid.observe(s,previous_load,len(self.homes)); societal=SocietyAgent(); societal.price_multiplier=self.price_multiplier; coord=HomeAgent
         rows=[]; solar_step=0.; used_step=0.; cost_step=0.; baseline_import=0.; offers=[]; bids=[]; homes_by_id={}; schedules={}; effective_homes={}; logs_by_home={}
-        learned_predictions={}
+        learned_predictions={}; learned_society_predictions={}; learned_grid_predictions=[]
         if self.learned_model is not None:
             try:
                 import torch
@@ -102,7 +105,21 @@ class SimulationManager:
                         history.append([forecast_step/96,forecast_temp/50,forecast_cloud,self.world.solar_kw(profile.solar_kwp,forecast_step,forecast_cloud)/8,self.world.price(forecast_step)/.3,float(forecast_stress),profile.solar_kwp/8,profile.ac_count/4,profile.ac_kw/2,profile.ev_kw/8,profile.battery_kwh/10,profile.base_load_kw/2,profile.comfort_weight/1.5,profile.cost_weight/1.5,profile.flexibility_weight,profile.ev_energy_need_kwh/20,(stat['room_temp']-profile.temperature_setpoint_c)/10,(stat['soc']/profile.battery_kwh if profile.battery_kwh else 0)])
                     sequences.append(history)
                 batch=torch.tensor(sequences,dtype=torch.float32)
-                with torch.inference_mode(): predicted=self.learned_model(batch,torch.zeros(len(self.homes),dtype=torch.long)).tolist()
+                with torch.inference_mode():
+                    society_predicted=self.learned_model(batch,torch.ones(len(self.homes),dtype=torch.long)).tolist()
+                    grid_predicted=self.learned_model(batch,torch.full((len(self.homes),),2,dtype=torch.long)).tolist()
+                learned_society_predictions={h.id:society_predicted[i] for i,h in enumerate(self.homes)}
+                learned_grid_predictions=grid_predicted
+            except (RuntimeError, ValueError, TypeError): self.learned_fallback=True
+        grid_action=grid.act([sum(action[k] for action in learned_grid_predictions)/len(learned_grid_predictions) for k in range(7)] if learned_grid_predictions else None)
+        price=float(grid_action['price']); stress=bool(grid_action['stress']); grid_cap=float(grid_action['cap_kw'])
+        if self.learned_model is not None and learned_grid_predictions:
+            try:
+                import torch
+                model_batch=batch.clone()
+                model_batch[:,-1,4]=min(1.,max(0.,price*society_price_factor/.3))
+                model_batch[:,-1,5]=float(stress)
+                with torch.inference_mode(): predicted=self.learned_model(model_batch,torch.zeros(len(self.homes),dtype=torch.long)).tolist()
                 learned_predictions={h.id:predicted[i] for i,h in enumerate(self.homes)}
             except (RuntimeError, ValueError, TypeError): self.learned_fallback=True
         for h in self.homes:
@@ -116,7 +133,7 @@ class SimulationManager:
                 stat['ev_remaining']=max(trip,effective.ev_battery_kwh*effective.ev_target_pct-max(0,current_soc-trip))
                 baseline_soc=max(0,stat['ev_initial_soc']+stat['baseline_ev_delivered']-trip)
                 stat['baseline_ev_remaining']=max(trip,effective.ev_battery_kwh*effective.ev_target_pct-baseline_soc)
-            solar=self.world.solar_kw(h.solar_kwp,s,cloud); home_agent=coord(effective); home_agent.observe({'step':s,'temperature_c':temp,'solar_kw':solar,'price':price,'stress':stress})
+            solar=self.world.solar_kw(h.solar_kwp,s,cloud); home_agent=coord(effective); home_agent.observe({'step':s,'temperature_c':temp,'solar_kw':solar,'price':price,'stress':stress,'society_price_multiplier':society_price_factor})
             act=home_agent.plan(s,self.world,stat['ev_remaining'],stat['soc'],stat['room_temp'],48)[0]; fallback=self.learned_fallback
             if self.learned_model is not None and h.id in learned_predictions:
                 try:
@@ -157,7 +174,7 @@ class SimulationManager:
             baseline_demand=effective.base_load_kw+baseline_ac+baseline_ev_kw+baseline_charge_kw+(.9 if effective.geyser and s in (geyser_baseline,geyser_baseline+1) else 0)+(.6 if effective.washing_machine and not quiet and washer_baseline<=s<washer_baseline+4 else 0)
             baseline_net=baseline_demand-solar; baseline_cost=(max(0,baseline_net)*price-max(0,-baseline_net)*.04)*.25
             stat['baseline_cost']+=baseline_cost; stat['baseline_ev_remaining']=max(0,stat['baseline_ev_remaining']-baseline_ev_kw*.25); stat['baseline_ev_delivered']+=baseline_ev_kw*.25; baseline_import+=max(0,baseline_net)
-            exchanged=[encode_message(PriceSignal('SOCIETY',h.id,0,{'grid_price':price,'cap_kw':self.world.cap_kw(len(self.homes),s),'stress':stress}))]
+            exchanged=[encode_message(PriceSignal('SOCIETY',h.id,0,{'grid_price':price,'cap_kw':grid_cap,'stress':stress}))]
             if offer_kwh>1e-9: exchanged.append(encode_message(P2POffer(h.id,'SOCIETY',0,{'kwh':offer_kwh,'price':.04})))
             if bid_kwh>1e-9: exchanged.append(encode_message(P2PBid(h.id,'SOCIETY',0,{'kwh':bid_kwh,'price':price})))
             event={'timestamp':f'{s//4:02d}:{s%4*15:02d}','step':s,'role':'HOME','agent_id':h.id,'action':'scheduled household loads','shield_correction':corrections,'explanation':'Shifted flexible load using solar and tariff signals.','messages':exchanged,'policy':'teacher_fallback' if fallback and self.policy=='learned' else self.policy}
@@ -189,15 +206,15 @@ class SimulationManager:
             if ((start<=s<end) if start<end else (s>=start or s<end)) and st['room_temp']>effective.temperature_setpoint_c+.1: self.violations+=1; self.violation_counts['temperature_comfort']+=1
             cost_step+=row['cost']
         net_load=sum(x['net_kw'] for x in rows); imports=sum(x['import_kw'] for x in rows)
-        cap=self.world.cap_kw(len(self.homes),s); societal.observe({row['home']:max(0,row['net_kw']) for row in rows},cap,{key:value['comfort'] for key,value in self.home_stats.items()},s)
-        negotiation=societal.act()
-        while sum(societal.loads.values())>cap and societal.rounds<5: negotiation=societal.act()
-        self.negotiation_round=negotiation['round']; self.fairness_weights=negotiation['weights']; self.price_multiplier=negotiation['price_multiplier']
+        cap=grid_cap; societal.observe({row['home']:max(0,row['net_kw']) for row in rows},cap,{key:value['comfort'] for key,value in self.home_stats.items()},s)
+        negotiation=societal.act(learned_society_predictions or None)
+        while sum(societal.loads.values())>cap and societal.rounds<5: negotiation=societal.act(learned_society_predictions or None)
+        self.negotiation_round=negotiation['round']; self.fairness_weights=negotiation['weights']; self.price_multiplier=negotiation['price_multiplier']; self.price_signal_vector=negotiation['price_multiplier_vector']
         for event in logs_by_home.values():
             event['messages'].append(encode_message(PriceSignal('SOCIETY',event['agent_id'],negotiation['round'],{'multiplier_vector':negotiation['price_multiplier_vector'],'fairness_weight':self.fairness_weights[event['agent_id']]})))
             self.publish_event(event)
         self.baseline_loads.append(baseline_import)
-        self.loads.append({'step':s,'net_load_kw':net_load,'grid_import_kw':imports,'grid_export_kw':sum(x['export_kw'] for x in rows),'losses_kwh':0.0,'cap_kw':self.world.cap_kw(len(self.homes),s),'temperature_c':temp,'heatwave':hot,'p2p_trades':self.trades,'homes':rows})
+        self.loads.append({'step':s,'net_load_kw':net_load,'grid_import_kw':imports,'grid_export_kw':sum(x['export_kw'] for x in rows),'losses_kwh':0.0,'cap_kw':cap,'grid_price':price,'stress':stress,'temperature_c':temp,'heatwave':hot,'p2p_trades':self.trades,'homes':rows})
         self.solar_total+=solar_step; self.solar_used+=used_step; self.running_cost+=cost_step; self.step+=1
     def metrics(self):
         with self.lock:
