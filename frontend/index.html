@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HiveGrid Demo</title>
+  <style>
+    :root { color-scheme: light; --ink:#19251f; --muted:#66736c; --line:#dce5de; --green:#176b4b; --amber:#d58a25; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:#f4f7f4; color:var(--ink); font:15px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif; }
+    main { max-width:1100px; margin:0 auto; padding:28px 20px 48px; }
+    header { display:flex; align-items:flex-end; justify-content:space-between; gap:20px; margin-bottom:22px; }
+    h1 { margin:0; font-size:30px; letter-spacing:-.04em; }
+    h2 { margin:0 0 14px; font-size:17px; }
+    .sub,.hint { color:var(--muted); }
+    .sub { margin:5px 0 0; }
+    .status { display:flex; align-items:center; gap:8px; color:var(--muted); font-size:13px; }
+    .dot { width:9px;height:9px;border-radius:50%;background:#9aa79f; }
+    .dot.live { background:#2f9e6f; box-shadow:0 0 0 4px #dcefe5; }
+    .toolbar,.card,.panel { background:white; border:1px solid var(--line); border-radius:14px; }
+    .toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:10px; padding:13px; margin-bottom:14px; }
+    button { border:1px solid var(--line); border-radius:9px; padding:9px 13px; background:white; color:var(--ink); font:600 13px system-ui; cursor:pointer; }
+    button.primary { background:var(--green); border-color:var(--green); color:white; }
+    button:disabled { opacity:.5; cursor:wait; }
+    label { color:var(--muted); font-size:13px; }
+    input { width:78px; margin-left:5px; padding:8px; border:1px solid var(--line); border-radius:8px; font:inherit; }
+    .time { margin-left:auto; font-size:13px; color:var(--muted); }
+    .error { display:none; padding:10px 13px; margin-bottom:14px; border-radius:9px; background:#fff0ed; color:#9b3425; }
+    .kpis { display:grid; grid-template-columns:repeat(5,1fr); gap:12px; margin:14px 0; }
+    .card { padding:15px; }
+    .label { color:var(--muted); font-size:12px; }
+    .value { margin-top:6px; font-size:23px; font-weight:700; letter-spacing:-.03em; }
+    .panel { padding:17px; margin-top:14px; }
+    .chart { width:100%; height:250px; display:block; }
+    .legend { display:flex; gap:16px; color:var(--muted); font-size:12px; }
+    .key { display:inline-block; width:9px; height:9px; margin-right:5px; border-radius:2px; background:var(--green); }
+    .key.cap { background:var(--amber); }
+    .table-wrap { overflow:auto; }
+    table { width:100%; border-collapse:collapse; font-size:13px; white-space:nowrap; }
+    th,td { padding:9px 10px; border-bottom:1px solid #edf1ee; text-align:right; }
+    th:first-child,td:first-child { text-align:left; }
+    th { color:var(--muted); font-weight:600; }
+    .empty { color:var(--muted); padding:32px 10px; text-align:center; }
+    @media(max-width:760px) { header { align-items:flex-start; flex-direction:column; } .kpis { grid-template-columns:repeat(2,1fr); } .time { width:100%; margin-left:0; } .value { font-size:20px; } }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div><h1>HiveGrid</h1><p class="sub">A live view of the housing society energy simulation.</p></div>
+    <div class="status"><span id="dot" class="dot"></span><span id="status">Not started</span></div>
+  </header>
+  <section class="toolbar">
+    <label>Homes <input id="nHomes" type="number" min="50" max="100" value="60"></label>
+    <label>Seed <input id="seed" type="number" value="7"></label>
+    <button class="primary" id="start">Start heatwave demo</button>
+    <button id="step" disabled>Step 4 intervals</button>
+    <button id="run" disabled>Run full day</button>
+    <button id="reset">Reset</button>
+    <span class="time" id="clock">—</span>
+  </section>
+  <div id="error" class="error"></div>
+  <section class="kpis">
+    <div class="card"><div class="label">Society grid import</div><div class="value" id="load">—</div></div>
+    <div class="card"><div class="label">Current cap</div><div class="value" id="cap">—</div></div>
+    <div class="card"><div class="label">Peak reduction</div><div class="value" id="reduction">—</div></div>
+    <div class="card"><div class="label">Solar self-use</div><div class="value" id="solar">—</div></div>
+    <div class="card"><div class="label">Hard violations</div><div class="value" id="violations">—</div></div>
+  </section>
+  <section class="panel">
+    <h2>Society load and cap</h2>
+    <div class="legend"><span><i class="key"></i>Grid import kW</span><span><i class="key cap"></i>Cap kW</span></div>
+    <svg id="chart" class="chart" viewBox="0 0 1000 250" role="img" aria-label="Society load versus cap chart"></svg>
+  </section>
+  <section class="panel">
+    <h2>Homes <span class="hint" id="homeCount"></span></h2>
+    <div class="table-wrap" id="homes"><div class="empty">Start a simulation to see household schedules.</div></div>
+  </section>
+</main>
+<script>
+  const $ = id => document.getElementById(id);
+  let busy = false;
+  async function api(path, options = {}) {
+    const response = await fetch(path, {headers:{'Content-Type':'application/json'}, ...options});
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || data.error || `Request failed (${response.status})`);
+    return data;
+  }
+  function setBusy(value) {
+    busy=value;
+    document.querySelectorAll('button').forEach(button => button.disabled=value || (button.id==='step'||button.id==='run') && !$('dot').classList.contains('live'));
+  }
+  function showError(message='') { $('error').textContent=message; $('error').style.display=message?'block':'none'; }
+  async function refresh() {
+    const [state,metrics,series,homes,grid]=await Promise.all([
+      api('/simulation/state'),api('/metrics'),api('/timeseries'),api('/homes'),api('/grid')
+    ]);
+    $('dot').classList.add('live'); $('status').textContent=grid.stress?'Heatwave stress active':grid.heatwave_event?'Heatwave event scheduled':`Running · ${state.current_step}/96 intervals`;
+    $('clock').textContent=`${state.time} · grid ₹${Number(state.grid_price).toFixed(2)}/kWh`;
+    $('load').textContent=`${Number(state.society_net_load_kw).toFixed(1)} kW`;
+    $('cap').textContent=`${Number(state.cap_kw).toFixed(1)} kW`;
+    $('reduction').textContent=`${Number(metrics.peak_reduction_pct).toFixed(1)}%`;
+    $('solar').textContent=`${Number(metrics.solar_self_consumption_pct).toFixed(1)}%`;
+    $('violations').textContent=metrics.hard_constraint_violations ?? metrics.violations;
+    $('homeCount').textContent=`· ${homes.length} homes`;
+    drawChart(series.steps);
+    $('homes').innerHTML=`<table><thead><tr><th>Flat</th><th>Solar kW</th><th>Load kW</th><th>Grid import kW</th><th>Battery kWh</th><th>EV SoC</th><th>Cost today</th></tr></thead><tbody>${homes.slice(0,12).map(home=>`<tr><td>${home.profile.name}</td><td>${Number(home.profile.solar_kwp).toFixed(1)}</td><td>${Number(home.schedule?.load_kw||0).toFixed(2)}</td><td>${Number(home.schedule?.import_kw||0).toFixed(2)}</td><td>${Number(home.battery_soc_kwh).toFixed(1)}</td><td>${(100*Number(home.ev_soc_pct)).toFixed(0)}%</td><td>${Number(home.today_cost).toFixed(2)}</td></tr>`).join('')}</tbody></table>`;
+    $('step').disabled=busy||state.current_step>=96; $('run').disabled=busy||state.current_step>=96;
+  }
+  function drawChart(steps) {
+    const svg=$('chart'), width=1000,height=250,pad=30; svg.replaceChildren();
+    if(!steps.length){svg.innerHTML='<text x="500" y="125" text-anchor="middle" fill="#66736c">Run a step to draw the chart</text>';return;}
+    const max=Math.max(1,...steps.flatMap(p=>[p.grid_import_kw,p.cap_kw]));
+    const x=i=>pad+(width-2*pad)*(steps.length===1?0:i/(steps.length-1));
+    const y=v=>height-pad-(height-2*pad)*v/max;
+    const line=(key,color)=>{const points=steps.map((p,i)=>`${x(i)},${y(p[key])}`).join(' ');const poly=document.createElementNS('http://www.w3.org/2000/svg','polyline');poly.setAttribute('points',points);poly.setAttribute('fill','none');poly.setAttribute('stroke',color);poly.setAttribute('stroke-width','3');poly.setAttribute('stroke-linejoin','round');svg.appendChild(poly);};
+    line('grid_import_kw','#176b4b'); line('cap_kw','#d58a25');
+    const label=document.createElementNS('http://www.w3.org/2000/svg','text');label.setAttribute('x',pad);label.setAttribute('y',16);label.setAttribute('fill','#66736c');label.setAttribute('font-size','12');label.textContent=`0–${steps.length-1} · scale 0–${max.toFixed(0)} kW`;svg.appendChild(label);
+  }
+  async function action(fn, update=true) { if(busy)return; setBusy(true);showError();try{await fn();if(update)await refresh();}catch(error){showError(error.message);}finally{setBusy(false);} }
+  $('start').onclick=()=>action(async()=>{
+    const n=Number($('nHomes').value), seed=Number($('seed').value);
+    await api('/simulation/start',{method:'POST',body:JSON.stringify({n_homes:n,seed,policy:'teacher',scenario:'heatwave'})});
+    await api('/grid/event',{method:'POST',body:JSON.stringify({type:'heatwave',start:72,end:88,cap_reduction_pct:20})});
+  });
+  $('step').onclick=()=>action(()=>api('/simulation/step',{method:'POST',body:JSON.stringify({n_steps:4})}));
+  $('run').onclick=()=>action(()=>api('/simulation/run',{method:'POST',body:'{}'}));
+  $('reset').onclick=()=>action(async()=>{await api('/simulation/reset',{method:'POST',body:'{}'});$('dot').classList.remove('live');$('status').textContent='Not started';$('clock').textContent='—';$('homes').innerHTML='<div class="empty">Start a simulation to see household schedules.</div>';['load','cap','reduction','solar','violations'].forEach(id=>$(id).textContent='—');drawChart([]);},false);
+  api('/health').then(()=>{$('status').textContent='Backend connected';}).catch(error=>showError(error.message));
+</script>
+</body>
+</html>
