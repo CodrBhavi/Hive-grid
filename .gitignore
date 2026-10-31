@@ -1,7 +1,9 @@
 .venv/
 .vendor/
+.tmp/
 __pycache__/
 *.py[cod]
 .pytest_cache/
 data/
-artifacts/
+artifacts/*
+!artifacts/hive_policy.pt

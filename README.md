@@ -46,7 +46,7 @@ Run the terminal demo with `python demo_run.py --smoke`; run checks with `pytest
 
 ## Learned policy
 
-The shared four-layer, 144-wide transformer has separate HOME, SOCIETY and GRID heads and is trained from scratch. Home teacher schedules use a rolling 48-step horizon. Collect 100,000 teacher samples and train with:
+The shared four-layer, 144-wide transformer has separate HOME, SOCIETY and GRID heads. The committed `artifacts/hive_policy.pt` checkpoint was initialized randomly and trained for four epochs on 5,000 seeded teacher examples. A separate 512-example seed achieved held-out imitation MSE 0.00671. In a seeded 50-home heatwave run, it completed all 96 intervals with zero EV deadline, comfort, or energy-balance violations. This is one deterministic simulator result; it does not establish generalization beyond these synthetic scenarios. Home teacher schedules use a rolling 48-step horizon. The browser demo lets you choose the learned policy or teacher baseline. To retrain from scratch with a larger dataset, collect 100,000 teacher samples and train with:
 
 ```powershell
 python collect.py --samples 100000 --seed 11 --output data/teacher.pt

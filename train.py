@@ -16,11 +16,13 @@ def main() -> None:
     n=min(len(data['roles']),512 if args.smoke else len(data['roles']))
     ds=TensorDataset(data['observations'][:n],data['roles'][:n],data['actions'][:n]); loader=DataLoader(ds,batch_size=16 if args.smoke else args.batch_size,shuffle=True,generator=torch.Generator().manual_seed(args.seed))
     model=HivePolicy(); optimizer=torch.optim.AdamW(model.parameters(),lr=3e-4); epochs=1 if args.smoke else args.epochs
+    losses=[]
     for epoch in range(epochs):
         total=0.
         for x,role,y in loader:
             optimizer.zero_grad(set_to_none=True); loss=torch.nn.functional.mse_loss(model(x,role),y); loss.backward(); torch.nn.utils.clip_grad_norm_(model.parameters(),1.0); optimizer.step(); total+=float(loss.detach())
-        print(f'epoch {epoch+1}/{epochs}: mse={total/max(1,len(loader)):.6f}')
-    out=Path(args.output); out.parent.mkdir(parents=True,exist_ok=True); torch.save({'state_dict':model.state_dict(),'features':FEATURES,'actions':7,'seed':args.seed},out)
+        epoch_mse=total/max(1,len(loader)); losses.append(epoch_mse)
+        print(f'epoch {epoch+1}/{epochs}: mse={epoch_mse:.6f}')
+    out=Path(args.output); out.parent.mkdir(parents=True,exist_ok=True); torch.save({'state_dict':model.state_dict(),'features':FEATURES,'actions':7,'seed':args.seed,'training':{'sample_count':n,'epochs':epochs,'batch_size':16 if args.smoke else args.batch_size,'final_train_mse':losses[-1]}},out)
     print(f'Saved {parameter_count(model):,} parameters to {out}')
 if __name__=='__main__': main()

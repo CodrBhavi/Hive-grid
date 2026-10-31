@@ -39,12 +39,12 @@ class SimulationManager:
     def __init__(self): self.lock = RLock(); self.started = False; self.reset()
     def reset(self):
         with getattr(self, 'lock', RLock()):
-            self.started=False; self.step=0; self.homes=[]; self.world=None; self.logs=[]; self.loads=[]; self.trades=[]; self.home_stats={}; self.running_cost=0.0; self.solar_total=0.0; self.solar_used=0.0; self.overrides={}; self.baseline_loads=[]; self.violations=0; self.negotiation_round=0; self.price_multiplier=1.0; self.fairness_weights={}; self.event_subscribers=set()
+            self.started=False; self.step=0; self.homes=[]; self.world=None; self.logs=[]; self.loads=[]; self.trades=[]; self.home_stats={}; self.running_cost=0.0; self.solar_total=0.0; self.solar_used=0.0; self.overrides={}; self.baseline_loads=[]; self.violations=0; self.violation_counts={'energy_balance':0,'ev_deadline':0,'temperature_comfort':0}; self.negotiation_round=0; self.price_multiplier=1.0; self.fairness_weights={}; self.event_subscribers=set()
     def start(self, req: StartRequest):
         if req.policy not in ('teacher', 'learned'): raise HTTPException(400, detail='policy must be teacher or learned')
         if req.scenario not in ('summer','heatwave'): raise HTTPException(400,detail='scenario must be summer or heatwave')
         with self.lock:
-            self.homes=generate_profiles(req.n_homes, req.seed); self.world=World(req.seed); self.step=0; self.logs=[]; self.loads=[]; self.trades=[]; self.home_stats={h.id:{'cost':0.,'baseline_cost':0.,'comfort':0.,'savings':0.,'soc':h.battery_kwh*.5,'baseline_soc':h.battery_kwh*.5,'ev_initial_soc':h.ev_battery_kwh*.5,'ev_remaining':max(h.ev_energy_need_kwh,h.ev_battery_kwh*max(0,h.ev_target_pct-.5)),'baseline_ev_remaining':max(h.ev_energy_need_kwh,h.ev_battery_kwh*max(0,h.ev_target_pct-.5)),'ev_energy_delivered':0.,'baseline_ev_delivered':0.,'ev_energy_used':0.,'room_temp':h.temperature_setpoint_c,'baseline_room_temp':h.temperature_setpoint_c} for h in self.homes}; self.started=True; self.policy=req.policy; self.seed=req.seed; self.learned_model=None; self.learned_fallback=req.policy=='learned'; self.overrides={}; self.baseline_loads=[]; self.solar_total=0.; self.solar_used=0.; self.running_cost=0.; self.trades=[]; self.loads=[]; self.logs=[]; self.violations=0; self.negotiation_round=0; self.price_multiplier=1.0; self.fairness_weights={}
+            self.homes=generate_profiles(req.n_homes, req.seed); self.world=World(req.seed); self.step=0; self.logs=[]; self.loads=[]; self.trades=[]; self.home_stats={h.id:{'cost':0.,'baseline_cost':0.,'comfort':0.,'savings':0.,'soc':h.battery_kwh*.5,'baseline_soc':h.battery_kwh*.5,'ev_initial_soc':h.ev_battery_kwh*.5,'ev_remaining':max(h.ev_energy_need_kwh,h.ev_battery_kwh*max(0,h.ev_target_pct-.5)),'baseline_ev_remaining':max(h.ev_energy_need_kwh,h.ev_battery_kwh*max(0,h.ev_target_pct-.5)),'ev_energy_delivered':0.,'baseline_ev_delivered':0.,'ev_energy_used':0.,'room_temp':h.temperature_setpoint_c,'baseline_room_temp':h.temperature_setpoint_c} for h in self.homes}; self.started=True; self.policy=req.policy; self.seed=req.seed; self.learned_model=None; self.learned_fallback=req.policy=='learned'; self.overrides={}; self.baseline_loads=[]; self.solar_total=0.; self.solar_used=0.; self.running_cost=0.; self.trades=[]; self.loads=[]; self.logs=[]; self.violations=0; self.violation_counts={'energy_balance':0,'ev_deadline':0,'temperature_comfort':0}; self.negotiation_round=0; self.price_multiplier=1.0; self.fairness_weights={}
             if req.scenario == 'heatwave': self.world.heatwave=True
             if req.policy == 'learned':
                 try:
@@ -75,7 +75,7 @@ class SimulationManager:
     def state(self):
         with self.lock:
             net=self.loads[-1]['net_load_kw'] if self.loads else 0.; current=max(0,self.step-1)
-            return {'current_step':self.step,'time':f'{self.step//4:02d}:{(self.step%4)*15:02d}','society_net_load_kw':net,'cap_kw':self.world.cap_kw(len(self.homes),current) if self.world else 0.,'grid_price':self.world.price(current) if self.world else 0.,'stress':self.world.is_stress(current,net,len(self.homes)) if self.world else False,'running_cost':self.running_cost}
+            return {'current_step':self.step,'time':f'{self.step//4:02d}:{(self.step%4)*15:02d}','society_net_load_kw':net,'cap_kw':self.world.cap_kw(len(self.homes),current) if self.world else 0.,'grid_price':self.world.price(current) if self.world else 0.,'stress':self.world.is_stress(current,net,len(self.homes)) if self.world else False,'running_cost':self.running_cost,'policy':getattr(self,'policy',None),'learned_model_loaded':self.learned_model is not None if getattr(self,'started',False) else False}
     def advance(self, count):
         with self.lock:
             self.require(); count=min(count,96-self.step)
@@ -124,6 +124,8 @@ class SimulationManager:
                     candidate={'base_kw':h.base_load_kw,'ac_kw':prediction[0]*6,'ev_kw':prediction[1]*8,'geyser_kw':prediction[2]*1.2,'other_kw':prediction[3],'battery_charge_kw':prediction[4]*3,'battery_discharge_kw':prediction[5]*3,'solar_kw':solar,'comfort_deficit':prediction[6]*10}
                     ev_soc=stat['ev_initial_soc']+stat['ev_energy_delivered']-stat['ev_energy_used']
                     projected_candidate, candidate_corrections=project(candidate,effective,step=s,battery_soc_kwh=stat['soc'],ev_remaining_kwh=stat['ev_remaining'],room_temp_c=stat['room_temp'],outdoor_temp_c=temp,ev_soc_kwh=ev_soc)
+                    # Preserve the teacher's per-step EV charge floor so learning cannot miss a resident deadline.
+                    projected_candidate['ev_kw']=max(projected_candidate['ev_kw'],act.ev_kw)
                     if any(abs(float(candidate.get(k,0))-float(projected_candidate.get(k,0)))>1.0 for k in candidate):
                         fallback=True
                     else:
@@ -176,15 +178,15 @@ class SimulationManager:
             row['balance_residual_kwh']=balance(row['solar_kw']*.25,action['battery_discharge_kw']*.25,row['import_kw']*.25,row.get('p2p_bought_kwh',0),
                 action['base_kw']*.25,action['ac_kw']*.25,action['ev_kw']*.25,action['geyser_kw']*.25,action['other_kw']*.25,
                 action['battery_charge_kw']*.25,row['export_kw']*.25,row.get('p2p_sold_kwh',0))
-            if abs(row['balance_residual_kwh'])>1e-6: self.violations+=1
+            if abs(row['balance_residual_kwh'])>1e-6: self.violations+=1; self.violation_counts['energy_balance']+=1
             st['cost']+=row['cost']; st['savings']=st['baseline_cost']-st['cost']; st['comfort']+=action['comfort_deficit']*.25
             st['soc']=min(h.battery_kwh,max(0,st['soc']+action['battery_charge_kw']*.25*h.battery_efficiency-action['battery_discharge_kw']*.25/h.battery_efficiency))
             delivered=action['ev_kw']*.25; st['ev_remaining']=max(0,st['ev_remaining']-delivered); st['ev_energy_delivered']+=delivered
             deadline=effective_homes[h.id].ev_deadline_step%96
-            if h.ev_kw and s==deadline-1 and st['ev_remaining']>1e-6: self.violations+=1
+            if h.ev_kw and s==deadline-1 and st['ev_remaining']>1e-6: self.violations+=1; self.violation_counts['ev_deadline']+=1
             room=st['room_temp']; st['room_temp']=max(16,min(50,room+.015*(temp-room)-.7*action['ac_kw']))
             effective=effective_homes[h.id]; start,end=effective.temperature_window
-            if ((start<=s<end) if start<end else (s>=start or s<end)) and st['room_temp']>effective.temperature_setpoint_c+.1: self.violations+=1
+            if ((start<=s<end) if start<end else (s>=start or s<end)) and st['room_temp']>effective.temperature_setpoint_c+.1: self.violations+=1; self.violation_counts['temperature_comfort']+=1
             cost_step+=row['cost']
         net_load=sum(x['net_kw'] for x in rows); imports=sum(x['import_kw'] for x in rows)
         cap=self.world.cap_kw(len(self.homes),s); societal.observe({row['home']:max(0,row['net_kw']) for row in rows},cap,{key:value['comfort'] for key,value in self.home_stats.items()},s)
@@ -203,7 +205,7 @@ class SimulationManager:
             costs=[v['cost'] for v in self.home_stats.values()]; savings=[v['baseline_cost'] for v in self.home_stats.values()]
             result=summarize(baseline,peak,self.solar_total,self.solar_used,costs,savings,[v['comfort'] for v in self.home_stats.values()])
             result['per_home_cost']={h.id:self.home_stats[h.id]['cost'] for h in self.homes}; result['per_home_savings']={h.id:self.home_stats[h.id]['savings'] for h in self.homes}
-            result['hard_constraint_violations']=self.violations; result['violations']=self.violations; result['comfort_degree_hours']=sum(v['comfort'] for v in self.home_stats.values())
+            result['hard_constraint_violations']=self.violations; result['violations']=self.violations; result['violation_counts']=dict(self.violation_counts); result['comfort_degree_hours']=sum(v['comfort'] for v in self.home_stats.values())
             return result
 
 manager=SimulationManager(); app=FastAPI(title='HiveGrid API',version='1.0.0'); app.add_middleware(CORSMiddleware,allow_origins=['*'],allow_methods=['*'],allow_headers=['*'])

@@ -53,6 +53,7 @@
   <section class="toolbar">
     <label>Homes <input id="nHomes" type="number" min="50" max="100" value="60"></label>
     <label>Seed <input id="seed" type="number" value="7"></label>
+    <label>Policy <select id="policy"><option value="learned" selected>Learned model</option><option value="teacher">Teacher baseline</option></select></label>
     <button class="primary" id="start">Start heatwave demo</button>
     <button id="step" disabled>Step 4 intervals</button>
     <button id="run" disabled>Run full day</button>
@@ -95,7 +96,7 @@
     const [state,metrics,series,homes,grid]=await Promise.all([
       api('/simulation/state'),api('/metrics'),api('/timeseries'),api('/homes'),api('/grid')
     ]);
-    $('dot').classList.add('live'); $('status').textContent=grid.stress?'Heatwave stress active':grid.heatwave_event?'Heatwave event scheduled':`Running · ${state.current_step}/96 intervals`;
+    $('dot').classList.add('live'); const policyLabel=state.policy==='learned'?(state.learned_model_loaded?'Learned model':'Teacher fallback'):'Teacher baseline'; $('status').textContent=`${grid.stress?'Heatwave stress active':grid.heatwave_event?'Heatwave event scheduled':`Running · ${state.current_step}/96 intervals`} · ${policyLabel}`;
     $('clock').textContent=`${state.time} · grid ₹${Number(state.grid_price).toFixed(2)}/kWh`;
     $('load').textContent=`${Number(state.society_net_load_kw).toFixed(1)} kW`;
     $('cap').textContent=`${Number(state.cap_kw).toFixed(1)} kW`;
@@ -120,7 +121,7 @@
   async function action(fn, update=true) { if(busy)return; setBusy(true);showError();try{await fn();if(update)await refresh();}catch(error){showError(error.message);}finally{setBusy(false);} }
   $('start').onclick=()=>action(async()=>{
     const n=Number($('nHomes').value), seed=Number($('seed').value);
-    await api('/simulation/start',{method:'POST',body:JSON.stringify({n_homes:n,seed,policy:'teacher',scenario:'heatwave'})});
+    await api('/simulation/start',{method:'POST',body:JSON.stringify({n_homes:n,seed,policy:$('policy').value,scenario:'heatwave'})});
     await api('/grid/event',{method:'POST',body:JSON.stringify({type:'heatwave',start:72,end:88,cap_reduction_pct:20})});
   });
   $('step').onclick=()=>action(()=>api('/simulation/step',{method:'POST',body:JSON.stringify({n_steps:4})}));
